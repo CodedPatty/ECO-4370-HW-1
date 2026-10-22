@@ -1,0 +1,322 @@
+---
+title: "ECON 4370/6370 — Homework 1"
+author: "Jovanni Reyes (49750812)"
+date: "2025-09-09"
+format: html
+execute:
+  echo: true
+---
+
+This homework is a coding assignment. All work below is done in Quarto/Knitr code chunks.
+
+## 0. Setup
+
+```{r}
+set.seed(123)  # Please don't change this seed.
+```
+
+## 1. OLS Estimation
+
+The OLS estimator is β̂ = (X′X) −1 X′y . The estimated error variance is based on the residual sum of squares divided by n − k, and t-values are coefficients divided by their estimated standard errors.
+
+```{r}
+ols_est <- function(X, y) {
+  # Make sure inputs have convenient matrix/vector forms
+  X <- as.matrix(X)
+  y <- as.numeric(y)
+
+  n <- nrow(X)
+  k <- ncol(X)
+
+  # OLS coefficient estimates
+  bhat <- solve(crossprod(X), crossprod(X, y))
+  bhat <- as.numeric(bhat)
+
+  # Residuals and estimated error variance
+  uhat <- y - as.numeric(X %*% bhat)
+  sigma2_hat <- sum(uhat^2) / (n - k)
+
+  # Conventional variance matrix, standard errors, and t-values
+  vcov_hat <- sigma2_hat * solve(crossprod(X))
+  se_hat <- sqrt(diag(vcov_hat))
+  t_values <- bhat / se_hat
+
+  # Preserve coefficient names when X has column names
+  if (!is.null(colnames(X))) {
+    names(bhat) <- colnames(X)
+    names(t_values) <- colnames(X)
+  }
+
+  list(coefficients = bhat, t_values = t_values)
+}
+```
+
+To test the function, I generate a small artificial dataset and compare my results with `lm()` .
+
+```{r}
+# Generate a simple test dataset
+n_test <- 200
+x1_test <- rnorm(n_test)
+x2_test <- rnorm(n_test)
+e_test  <- rnorm(n_test)
+y_test  <- 1 + 2 * x1_test - 0.5 * x2_test + e_test
+
+X_test <- cbind(
+  `(Intercept)` = 1,
+  x1 = x1_test,
+  x2 = x2_test
+)
+
+# My OLS function
+my_fit <- ols_est(X_test, y_test)
+
+# Built-in lm()
+lm_fit <- lm(y_test ~ x1_test + x2_test)
+lm_tab <- summary(lm_fit)$coefficients
+
+# Compare coefficient estimates and t-values
+comparison <- data.frame(
+  coefficient = names(my_fit$coefficients),
+  my_estimate = as.numeric(my_fit$coefficients),
+  lm_estimate = lm_tab[, "Estimate"],
+  my_t_value  = as.numeric(my_fit$t_values),
+  lm_t_value  = lm_tab[, "t value"],
+  row.names = NULL
+)
+
+comparison
+```
+
+The two methods give the same coefficient estimates and t-values up to numerical rounding, so `ols_est()` is working correctly.
+
+## 2. Monte Carlo Simulation
+
+The simulation uses α = 0.11, β₁ = 0.22, β₂ = 0.33, ρ = 0.5, σ₁ = 1, σ₂ = 4, n = 100, and 1000 replications.
+
+### Step 1: Data generating function
+
+```{r}
+dgp <- function(n, alpha, beta, rho, sigma1, sigma2) {
+  # Mean vector and covariance matrix for (x1, x2)
+  mu <- c(0, 1)
+  Sigma <- matrix(
+    c(
+      sigma1^2, rho * sigma1 * sigma2,
+      rho * sigma1 * sigma2, sigma2^2
+    ),
+    nrow = 2,
+    byrow = TRUE
+  )
+
+  # Draw from a bivariate normal using a Cholesky factor
+  Z <- matrix(rnorm(2 * n), nrow = n, ncol = 2)
+  Xdraw <- sweep(Z %*% chol(Sigma), 2, mu, FUN = "+")
+
+  x1 <- Xdraw[, 1]
+  x2 <- Xdraw[, 2]
+  u  <- rnorm(n)
+
+  y <- alpha + beta[1] * x1 + beta[2] * x2 + u
+
+  data.frame(y = y, x1 = x1, x2 = x2)
+}
+```
+
+### Step 2: Setup Primitive Parameters
+
+```{r}
+n <- 100
+alpha_true <- 0.11
+beta_true <- c(beta1 = 0.22, beta2 = 0.33)
+rho <- 0.5
+sigma1 <- 1
+sigma2 <- 4
+R <- 1000
+
+true_parameters <- c(
+  alpha = alpha_true,
+  beta1 = beta_true[1],
+  beta2 = beta_true[2]
+)
+```
+
+### Step 3: Run Simulation
+
+```{r}
+# Each row will store (alpha_hat, beta1_hat, beta2_hat)
+estimates <- matrix(
+  NA_real_,
+  nrow = R,
+  ncol = 3,
+  dimnames = list(NULL, c("alpha", "beta1", "beta2"))
+)
+
+for (r in seq_len(R)) {
+  dat <- dgp(
+    n = n,
+    alpha = alpha_true,
+    beta = beta_true,
+    rho = rho,
+    sigma1 = sigma1,
+    sigma2 = sigma2
+  )
+
+  X <- cbind(
+    alpha = 1,
+    beta1 = dat$x1,
+    beta2 = dat$x2
+  )
+
+  fit <- ols_est(X, dat$y)
+  estimates[r, ] <- fit$coefficients
+}
+
+head(estimates)
+```
+
+### Step 4: Summarize Results
+
+```{r}
+sum_results <- function(estimates, true_values) {
+  estimates <- as.matrix(estimates)
+  true_values <- as.numeric(true_values)
+
+  bias <- colMeans(
+    sweep(estimates, 2, true_values, FUN = "-")
+  )
+
+  rmse <- sqrt(
+    colMeans(
+      sweep(estimates, 2, true_values, FUN = "-")^2
+    )
+  )
+
+  data.frame(
+    parameter = colnames(estimates),
+    true_value = true_values,
+    bias = as.numeric(bias),
+    RMSE = as.numeric(rmse),
+    row.names = NULL
+  )
+}
+
+simulation_summary <- sum_results(estimates, true_parameters)
+simulation_summary
+```
+
+```{r}
+# Empirical density of beta_1 estimates
+beta1_density <- density(estimates[, "beta1"])
+plot(
+  beta1_density,
+  main = expression("Empirical Density of " * hat(beta)[1]),
+  xlab = expression(hat(beta)[1]),
+  lwd = 2
+)
+abline(v = beta_true[1], lty = 2, lwd = 2)
+legend(
+  "topright",
+  legend = expression("True " * beta[1] == 0.22),
+  lty = 2,
+  lwd = 2,
+  bty = "n"
+)
+```
+
+### Step 5: Interpret your results
+
+The estimated biases are very close to zero, as expected under a correctly specified regression with a mean-independent error. The empirical distribution of β̂₁ is centered near the true value β₁ = 0.22. RMSE is positive because estimates vary across samples. Because x₂ has much greater variation than x₁ in this design, β₂ is estimated more precisely and typically has a smaller RMSE.
+
+### Step 6: Run simulation with different sample sizes
+
+```{r}
+sample_sizes <- c(100, 200, 500, 1000)
+
+sample_size_results <- data.frame()
+
+for (n_now in sample_sizes) {
+  est_now <- matrix(
+    NA_real_,
+    nrow = R,
+    ncol = 3,
+    dimnames = list(NULL, c("alpha", "beta1", "beta2"))
+  )
+
+  for (r in seq_len(R)) {
+    dat <- dgp(
+      n = n_now,
+      alpha = alpha_true,
+      beta = beta_true,
+      rho = rho,
+      sigma1 = sigma1,
+      sigma2 = sigma2
+    )
+
+    X <- cbind(
+      alpha = 1,
+      beta1 = dat$x1,
+      beta2 = dat$x2
+    )
+
+    est_now[r, ] <- ols_est(X, dat$y)$coefficients
+  }
+
+  tmp <- sum_results(est_now, true_parameters)
+  tmp$n <- n_now
+  sample_size_results <- rbind(sample_size_results, tmp)
+}
+
+sample_size_results <- sample_size_results[
+  , c("n", "parameter", "true_value", "bias", "RMSE")
+]
+
+sample_size_results
+```
+
+As sample size rises from 100 to 1000, bias remains close to zero while RMSE decreases. Larger samples reduce sampling variability, which is consistent with the usual 1/√n convergence rate of OLS.
+
+### Step 7: Run simulation with misspecified model
+
+```{r}
+misspec_estimates <- matrix(
+  NA_real_,
+  nrow = R,
+  ncol = 2,
+  dimnames = list(NULL, c("alpha", "beta1"))
+)
+
+for (r in seq_len(R)) {
+  dat <- dgp(
+    n = n,
+    alpha = alpha_true,
+    beta = beta_true,
+    rho = rho,
+    sigma1 = sigma1,
+    sigma2 = sigma2
+  )
+
+  X_misspec <- cbind(
+    alpha = 1,
+    beta1 = dat$x1
+  )
+
+  misspec_estimates[r, ] <- ols_est(X_misspec, dat$y)$coefficients
+}
+```
+
+```{r}
+# Bias and RMSE for beta_1 in the misspecified model
+beta1_misspec <- misspec_estimates[, "beta1"]
+
+misspec_summary <- data.frame(
+  parameter = "beta1",
+  true_value = beta_true[1],
+  mean_estimate = mean(beta1_misspec),
+  bias = mean(beta1_misspec - beta_true[1]),
+  RMSE = sqrt(mean((beta1_misspec - beta_true[1])^2))
+)
+
+misspec_summary
+```
+
+The misspecified regression produces a large positive bias in β̂₁ because x₂ is omitted even though it is positively correlated with x₁ and has a positive effect on y. The probability-limit coefficient on x₁ is β₁ + β₂ Cov(x₁,x₂)/Var(x₁) = 0.22 + 0.33·2 = 0.88, so the asymptotic omitted-variable bias is about 0.66. The Monte Carlo result is close to that value.
